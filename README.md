@@ -15,20 +15,27 @@ That starts the server and opens http://localhost:4747. Use Chrome (or Safari) f
 ## How it works
 
 - **Stack:** `server.py` (Python stdlib only) serves `web/` (plain HTML/CSS/JS). three.js comes from a CDN. No build step.
-- **Tasks:** every open `- [ ]` checkbox in the vault, grouped by note and read live from the Markdown. Notes with something dated today come first, then the most recently edited. Click the checkbox to tick it off: the server writes `[x]` into that line of the note (after checking the line hasn't changed). The row fades out after a moment, and clicking again before then reopens it. Click the text to open the note in Obsidian. Ticks are not committed automatically, so they show up as normal local changes in the vault. Excluded paths are set in `config.json` (`dump/`, `projects/_template/`, and the sales-coach `review-checklist.md`, which is a reusable checklist and not tasks). `.obsidian/` and other dot-folders are always skipped.
+- **Tasks:** every open `- [ ]` checkbox in the vault, grouped by note and read live from the Markdown. Notes with something dated today come first, then the most recently edited. Click the checkbox to tick it off: the server writes `[x]` into that line of the note (after checking the line hasn't changed). The row fades out after a moment, and clicking again before then reopens it. Click the text to open the note in Obsidian. Ticks are committed and pushed automatically (see Permissions). Excluded paths are set in `config.json` (`dump/`, `projects/_template/`, and the sales-coach `review-checklist.md`, which is a reusable checklist and not tasks). `.obsidian/` and other dot-folders are always skipped.
 - **YouTube digest:** the `## YouTube digest` section of today's `daily/` note, or the latest daily note that has one. Today's pick is shown with its thumbnail.
 - **Calendar + inbox:** only reachable through Claude's connectors, so the server runs headless Claude Code (`claude -p`, cwd = the vault) and writes the result to `data/brief.json`. This happens on start if the file is from another day or over an hour old, then hourly while the server runs (06:00–24:00), and whenever you press **Refresh**. One refresh takes about 30–60 seconds.
 - **Voice:** hold **space** (or the mic button) and talk. The page shows no hints for this. Speech-to-text is the browser's Web Speech API. The text goes to `/api/ask`, which runs `claude -p` in the vault and resumes the same session, so follow-ups work. After 30 minutes idle it starts a fresh conversation, or press "New conversation". The answer is spoken with `speechSynthesis`, using the macOS British voice "Daniel" when available. Press `/` to type instead, and `Esc` to stop it talking.
 
 ## Permissions (headless mode)
 
-Both headless runs are read-only, and the CLI enforces this. It isn't left to the prompt:
+The CLI flags enforce what each headless run can do, so it doesn't depend on the prompt. `--permission-mode dontAsk` denies anything not explicitly allowed instead of prompting.
 
-- `--tools "Read,Grep,Glob"` for voice (no built-in tools at all for the brief refresh). Write, Edit and Bash don't exist in those sessions.
-- `--allowedTools` lists only the read-only connector calls: Calendar `list_events`, `list_calendars`, `search_events`, `get_event`, and Gmail `search_threads`, `get_thread`, `get_message`, `list_labels`.
-- `--permission-mode dontAsk` denies any other call instead of prompting. Tested: `list_drafts` was denied and no file could be written.
+| | Brief refresh | Voice |
+|---|---|---|
+| Built-in tools (`--tools`) | none | `Read, Grep, Glob, Edit, Write` |
+| Files | — | edit/create inside the vault only (`Edit(./**)`, `Write(./**)`), never `.obsidian/`, `.git/`, `.claude/` |
+| Calendar | `list_events`, `list_calendars` | read + `suggest_time`, `create_event`, `update_event` (no delete) |
+| Gmail | `search_threads`, `get_thread` | read only (`search_threads`, `get_thread`, `get_message`, `list_labels`): no drafts, no sending |
+| Shell | no | no |
 
-To let it write later (e.g. tick off tasks or draft replies), widen those lists in `server.py` (`ASK_TOOLS`, `BRIEF_TOOLS`) deliberately.
+- **Say it back first:** the voice prompt makes Claude repeat every note edit or calendar change and wait for your "yes" in the next turn before doing it. This is an instruction, not a technical lock. Note edits can be undone with git, but calendar changes can't, so listen to the read-back.
+- **Commits:** the server commits vault changes made from the dashboard (checkbox ticks and voice edits), runs `git pull --rebase --autostash`, and pushes, per the vault's CLAUDE.md. Commits are batched about 8 seconds after the last change. Only the files the dashboard touched are committed; your other local changes are left alone. If the rebase fails, the commit stays local and the log says so.
+- Tested against a throwaway copy of the vault: writes to `/tmp` and `.obsidian/` were refused, and a Gmail draft call was denied.
+- To change what voice can do, edit `ASK_TOOLS` / `ASK_DENY` in `server.py`.
 
 The server binds to `127.0.0.1` only and rejects POSTs from other origins.
 

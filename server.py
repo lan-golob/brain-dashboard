@@ -24,32 +24,43 @@ from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = json.loads((ROOT / "config.json").read_text())
-VAULT = Path(os.path.expanduser(CONFIG["vault"])).resolve()
+VAULT = Path(os.path.expanduser(os.environ.get("BRAIN_VAULT") or CONFIG["vault"])).resolve()
 TZ = ZoneInfo(CONFIG.get("timezone", "Europe/Ljubljana"))
 BRIEF_PATH = ROOT / "data" / "brief.json"
 CLAUDE = shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
 
-# Read-only tool sets for headless runs. --tools limits which built-in tools exist
-# at all, --allowedTools pre-approves these, and --permission-mode dontAsk denies
-# anything else instead of prompting.
+# Tool sets for headless runs. --tools limits which built-in tools exist at all,
+# --allowedTools pre-approves these, --disallowedTools carves out exceptions, and
+# --permission-mode dontAsk denies anything else instead of prompting.
 CAL = "mcp__claude_ai_Google_Calendar__"
 GMAIL = "mcp__claude_ai_Gmail__"
 BRIEF_TOOLS = [f"{CAL}list_events", f"{CAL}list_calendars", f"{GMAIL}search_threads", f"{GMAIL}get_thread"]
-ASK_TOOLS = ["Read", "Grep", "Glob",
+CAL_WRITE = [f"{CAL}create_event", f"{CAL}update_event"]
+# Voice: read the vault and edit/create notes inside it (never .obsidian/, .git/,
+# .claude/), create and move calendar events, read Gmail. No shell, no sending
+# or drafting mail, no deleting events.
+ASK_BUILTIN = "Read,Grep,Glob,Edit,Write"
+ASK_TOOLS = ["Read", "Grep", "Glob", "Edit(./**)", "Write(./**)",
              f"{CAL}list_events", f"{CAL}list_calendars", f"{CAL}search_events", f"{CAL}get_event",
+             f"{CAL}suggest_time", *CAL_WRITE,
              f"{GMAIL}search_threads", f"{GMAIL}get_thread", f"{GMAIL}get_message", f"{GMAIL}list_labels"]
+ASK_DENY = [f"{t}(./{d}/**)" for t in ("Edit", "Write") for d in (".obsidian", ".git", ".claude")]
 
 
 def now():
     return dt.datetime.now(TZ)
 
 
-def claude(prompt, tools, builtin="", session=None, system=None, timeout=240):
-    """Run `claude -p` in the vault with a locked-down tool set. Returns the parsed JSON result."""
-    cmd = [CLAUDE, "-p", prompt, "--output-format", "json",
+def claude(prompt, tools, builtin="", deny=(), session=None, system=None, timeout=240):
+    """Run `claude -p` in the vault with a locked-down tool set.
+
+    Returns the final result object, plus "tools_used": the names of the tools it called."""
+    cmd = [CLAUDE, "-p", prompt, "--output-format", "stream-json", "--verbose",
            "--permission-mode", "dontAsk",
            "--tools", builtin,
            "--allowedTools", ",".join(tools)]
+    if deny:
+        cmd += ["--disallowedTools", ",".join(deny)]
     if CONFIG.get("model"):
         cmd += ["--model", CONFIG["model"]]
     if session:
@@ -57,10 +68,19 @@ def claude(prompt, tools, builtin="", session=None, system=None, timeout=240):
     if system:
         cmd += ["--append-system-prompt", system]
     proc = subprocess.run(cmd, cwd=VAULT, capture_output=True, text=True, timeout=timeout)
-    try:
-        out = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        raise RuntimeError((proc.stderr or proc.stdout or "no output").strip()[:300])
+    out, used = None, []
+    for line in proc.stdout.splitlines():
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if ev.get("type") == "assistant":
+            used += [c.get("name") for c in ev.get("message", {}).get("content", []) if c.get("type") == "tool_use"]
+        elif ev.get("type") == "result":
+            out = ev
+    if out is None:
+        raise RuntimeError((proc.stderr or proc.stdout or "no output").strip()[-300:])
+    out["tools_used"] = used
     if out.get("is_error"):
         raise RuntimeError(str(out.get("result") or out.get("subtype"))[:300])
     return out
@@ -137,7 +157,71 @@ def toggle_task(file, line, text, done):
         raise ValueError("the note changed since the dashboard loaded; refresh and try again")
     lines[line] = f"{m.group(1)}{'x' if done else ' '}{m.group(3)}{m.group(4)}{m.group(5) or ''}"
     path.write_text("".join(lines), encoding="utf-8")
-    log(f"{'ticked off' if done else 'reopened'}: {text} ({rel})")
+    verb = "ticked off" if done else "reopened"
+    log(f"{verb}: {text} ({rel})")
+    schedule_commit(rel, f"{verb}: {text}")
+
+
+# ---------- vault commits ----------
+# Changes made from the dashboard (ticks, voice edits) are committed and pushed, per
+# the vault's CLAUDE.md. Batched: one commit goes out a few seconds after the last change.
+# Only the files the dashboard touched are committed; other local changes are left alone.
+
+_commit = {"paths": set(), "notes": [], "timer": None}
+_commit_lock = threading.Lock()
+COMMIT_DELAY = 8
+
+
+def git(*args):
+    return subprocess.run(["git", *args], cwd=VAULT, capture_output=True, text=True, timeout=120)
+
+
+def dirty_files():
+    """{path: content hash} for changed/new files in the vault, ignoring dot-folders."""
+    r = git("status", "--porcelain", "-uall", "-z")
+    paths = [e[3:] for e in r.stdout.split("\0") if len(e) > 3 and not e.startswith("D")]
+    paths = [p for p in paths if not any(part.startswith(".") for part in p.split("/"))]
+    if not paths:
+        return {}
+    h = git("hash-object", "--", *paths).stdout.split()
+    return dict(zip(paths, h))
+
+
+def schedule_commit(rel_path, note):
+    with _commit_lock:
+        _commit["paths"].add(rel_path)
+        _commit["notes"].append(note)
+        if _commit["timer"]:
+            _commit["timer"].cancel()
+        _commit["timer"] = threading.Timer(COMMIT_DELAY, _commit_worker)
+        _commit["timer"].daemon = True
+        _commit["timer"].start()
+
+
+def _commit_worker():
+    with _commit_lock:
+        paths, notes = sorted(_commit["paths"]), _commit["notes"]
+        _commit["paths"], _commit["notes"], _commit["timer"] = set(), [], None
+    if not paths:
+        return
+    # ticking then unticking the same task leaves nothing to commit
+    changed = [p for p in paths if git("status", "--porcelain", "--", p).stdout.strip()]
+    if not changed:
+        return
+    subject = f"Dashboard: {notes[0]}" if len(notes) == 1 else f"Dashboard: {len(notes)} changes"
+    msg = subject if len(notes) == 1 else subject + "\n\n" + "\n".join(f"- {n}" for n in notes)
+    git("add", "--", *changed)
+    r = git("commit", "-m", msg, "--", *changed)
+    if r.returncode != 0:
+        log(f"commit failed: {(r.stdout + r.stderr).strip()[:200]}")
+        return
+    r = git("pull", "--rebase", "--autostash")
+    if r.returncode != 0:
+        log(f"pull --rebase failed; commit kept locally, push skipped: {r.stderr.strip()[:200]}")
+        git("rebase", "--abort")
+        return
+    r = git("push")
+    log("vault committed and pushed" if r.returncode == 0 else f"push failed: {r.stderr.strip()[:200]}")
 
 
 # ---------- YouTube digest ----------
@@ -270,9 +354,15 @@ def auto_refresh_loop():
 VOICE_SYSTEM = """You are Lan's voice assistant on his Brain Dashboard, speaking out loud through text-to-speech.
 Answer in a natural spoken style: short (one to three sentences unless he asks for more), no Markdown, no bullet points,
 no headings, no URLs, no file paths. Say times like "half past two". Be direct and warm, with a light, dry, Jarvis-like touch.
-You have read-only access: the vault (Read, Grep, Glob) and read-only Google Calendar and Gmail lookups. You cannot edit files,
-send or change email, or create events; if Lan asks for that, say it's read-only for now and tell him what you would do.
-Today's dashboard data is in ~/Projects/brain-dashboard/data/brief.json only if he asks about it; prefer the live tools."""
+You can read the vault (Read, Grep, Glob), edit and create notes in it (Edit, Write; follow the vault's CLAUDE.md for where
+things go and how they're formatted), look up and create or move Google Calendar events, and read Gmail.
+You cannot send, draft or change email, delete events, or run commands; if Lan asks, say so and tell him what you would do.
+
+Changes need his confirmation. Speech recognition mishears, so before ANY edit to a note or ANY calendar create/update:
+say back in one sentence exactly what you're about to do (which note or event, what text, which day and time) and ask
+"Shall I?". Then stop and make no change in that turn. Only make the change after he clearly says yes in his next turn;
+if he corrects you, say the corrected version back again. After making it, confirm briefly ("Done.").
+Don't commit or push; the dashboard commits vault changes itself."""
 
 _session = {"id": None, "last": 0.0}
 _session_lock = threading.Lock()
@@ -285,9 +375,21 @@ def ask(text):
             _session["id"] = None
         t = now()
         prompt = f"[{t.strftime('%A %d %B %Y, %H:%M')} Europe/Ljubljana] {text}"
-        out = claude(prompt, ASK_TOOLS, builtin="Read,Grep,Glob", session=_session["id"], system=VOICE_SYSTEM, timeout=180)
+        before = dirty_files()
+        out = claude(prompt, ASK_TOOLS, builtin=ASK_BUILTIN, deny=ASK_DENY,
+                     session=_session["id"], system=VOICE_SYSTEM, timeout=240)
         _session["id"] = out.get("session_id") or _session["id"]
         _session["last"] = time.time()
+        used = set(out["tools_used"])
+        if used & {"Edit", "Write"}:
+            # a short reply ("yes", "go ahead") confirms the previous request; name that one
+            request = _session.get("prev") if len(text.split()) <= 4 and _session.get("prev") else text
+            after = dirty_files()
+            for rel in sorted(p for p, h in after.items() if before.get(p) != h):
+                schedule_commit(rel, f"voice: {request[:80]}")
+        _session["prev"] = text
+        if used & set(CAL_WRITE):
+            refresh_brief()
         return (out.get("result") or "").strip()
 
 

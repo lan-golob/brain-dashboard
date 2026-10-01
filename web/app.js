@@ -349,6 +349,8 @@ async function ask(text) {
     addLine('claude', r.reply);
     $('new-chat').hidden = false;
     speak(r.reply);
+    // the turn may have edited a note or the calendar
+    loadTasks(); loadBrief();
   } catch (e) {
     clearInterval(thinkTimer);
     addLine('claude', 'Sorry, that didn’t go through.');
