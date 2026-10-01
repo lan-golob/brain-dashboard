@@ -90,8 +90,10 @@ async function loadTasks() {
     $('tasks').innerHTML = groups.map((g) => {
       const rows = g.tasks.map((t, i) => {
         const date = t.date ? `<span class="date ${t.date === today ? 'today' : ''}">${t.date === today ? 'today' : fmtDate(t.date)}</span>` : '';
-        return `<a class="task ${t.indent ? 'sub' : ''}" href="${obsidianUrl(g.file)}" ${i >= PER_GROUP ? 'hidden' : ''} title="${esc(plain(t.text))}">
-          <span class="box"></span><span class="txt">${esc(plain(t.text))}</span>${date}</a>`;
+        return `<div class="task ${t.indent ? 'sub' : ''}" ${i >= PER_GROUP ? 'hidden' : ''}
+            data-file="${esc(g.file)}" data-line="${t.line}" data-text="${esc(t.text)}">
+          <button class="box" aria-label="Tick off"></button>
+          <a class="txt" href="${obsidianUrl(g.file)}" title="${esc(plain(t.text))}">${esc(plain(t.text))}</a>${date}</div>`;
       }).join('');
       const more = g.tasks.length > PER_GROUP ? `<div class="more" data-more>+ ${g.tasks.length - PER_GROUP} more</div>` : '';
       return `<div class="task-group"><a class="group-head" href="${obsidianUrl(g.file)}">${esc(g.title)}<span>${g.tasks.length}</span></a>${rows}${more}</div>`;
@@ -100,7 +102,43 @@ async function loadTasks() {
     $('tasks').innerHTML = `<p class="error">Couldn't read the vault: ${esc(e.message)}</p>`;
   }
 }
-$('tasks').addEventListener('click', (e) => {
+// Tick a task off: writes [x] into the note. It fades out after a moment;
+// clicking again before then reopens it.
+async function setDone(row, done) {
+  const { file, line, text } = row.dataset;
+  const r = await fetch('/api/task', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ file, line: +line, text, done }),
+  });
+  if (!r.ok) throw new Error((await r.json()).error);
+}
+$('tasks').addEventListener('click', async (e) => {
+  const box = e.target.closest('.task .box');
+  if (box) {
+    const row = box.parentElement;
+    const done = !row.classList.contains('done');
+    row.classList.toggle('done', done);
+    clearTimeout(row._fade);
+    try {
+      await setDone(row, done);
+    } catch (err) {
+      row.classList.toggle('done', !done);
+      row.title = err.message;
+      return;
+    }
+    if (done) row._fade = setTimeout(() => {
+      row.classList.add('gone');
+      setTimeout(() => {
+        const group = row.parentElement;
+        row.remove();
+        const left = group.querySelectorAll('.task').length;
+        if (!left) group.remove(); else group.querySelector('.group-head span').textContent = left;
+        const total = $('tasks').querySelectorAll('.task').length;
+        $('task-meta').textContent = total ? `${total} open` : '';
+      }, 400);
+    }, 2200);
+    return;
+  }
   const m = e.target.closest('[data-more]');
   if (!m) return;
   m.parentElement.querySelectorAll('.task[hidden]').forEach((t) => (t.hidden = false));
@@ -211,7 +249,7 @@ function setState(text, active = false) {
   state.innerHTML = text;
   state.classList.toggle('active', active);
 }
-const IDLE = SR ? 'Hold <kbd>space</kbd> to talk' : 'Voice input needs Chrome or Safari · press <kbd>/</kbd> to type';
+const IDLE = '';
 setState(IDLE);
 if (!SR) $('typed').hidden = false;
 

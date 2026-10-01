@@ -101,7 +101,7 @@ def scan_tasks():
             except (OSError, UnicodeDecodeError):
                 continue
             tasks, fenced = [], False
-            for line in text.splitlines():
+            for lineno, line in enumerate(text.splitlines()):
                 if line.lstrip().startswith("```"):
                     fenced = not fenced
                     continue
@@ -109,7 +109,7 @@ def scan_tasks():
                 if m:
                     body = m.group(2).strip()
                     d = DATE_RE.search(body)
-                    tasks.append({"text": body, "indent": len(m.group(1).expandtabs(4)) // 2,
+                    tasks.append({"text": body, "line": lineno, "indent": len(m.group(1).expandtabs(4)) // 2,
                                   "date": d.group(1) if d else None})
             if tasks:
                 groups.append({"file": rel[:-3], "title": note_title(path, text), "tasks": tasks,
@@ -120,6 +120,24 @@ def scan_tasks():
     for g in groups:
         del g["mtime"], g["today"]
     return {"groups": groups, "total": sum(len(g["tasks"]) for g in groups), "today": today}
+
+
+TOGGLE_RE = re.compile(r"^(\s*[-*+] \[)([ xX])(\] )(.+?)(\r?\n)?$")
+
+
+def toggle_task(file, line, text, done):
+    """Tick (or untick) one checkbox in a vault note, after checking the line still matches."""
+    path = (VAULT / f"{file}.md").resolve()
+    rel = path.relative_to(VAULT).as_posix()  # raises if outside the vault
+    if any(part.startswith(".") for part in Path(rel).parts):
+        raise ValueError("not a vault note")
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    m = TOGGLE_RE.match(lines[line]) if 0 <= line < len(lines) else None
+    if not m or m.group(4).strip() != text.strip():
+        raise ValueError("the note changed since the dashboard loaded; refresh and try again")
+    lines[line] = f"{m.group(1)}{'x' if done else ' '}{m.group(3)}{m.group(4)}{m.group(5) or ''}"
+    path.write_text("".join(lines), encoding="utf-8")
+    log(f"{'ticked off' if done else 'reopened'}: {text} ({rel})")
 
 
 # ---------- YouTube digest ----------
@@ -320,6 +338,14 @@ class Handler(SimpleHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path == "/api/refresh":
             self.send_json({"started": refresh_brief()})
+        elif path == "/api/task":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length) or b"{}")
+                toggle_task(body["file"], int(body["line"]), body["text"], bool(body.get("done", True)))
+                self.send_json({"ok": True})
+            except Exception as e:  # noqa: BLE001
+                self.send_json({"error": str(e)}, 409)
         elif path == "/api/reset":
             with _session_lock:
                 _session["id"] = None
