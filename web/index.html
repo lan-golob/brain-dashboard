@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en" data-theme="ember">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brain</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='11' fill='none' stroke='%23ff8a3d' stroke-width='3'/></svg>">
+<link rel="stylesheet" href="style.css">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem('brain.theme')||'ember'}catch(e){}</script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<canvas id="orb-canvas"></canvas>
+<div class="vignette"></div>
+
+<header class="topbar">
+  <div class="greeting">
+    <h1 id="greeting">Good morning, Lan</h1>
+    <p id="date-line"></p>
+  </div>
+  <div class="clock" id="clock">--:--</div>
+  <div class="controls">
+    <button class="chip" id="refresh" title="Refresh calendar and inbox">
+      <svg viewBox="0 0 24 24" width="14" height="14"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span id="refresh-label">Refresh</span>
+    </button>
+    <div class="theme-toggle" role="radiogroup" aria-label="Theme">
+      <button data-set-theme="blue" title="Blue" aria-label="Blue theme"></button>
+      <button data-set-theme="ember" title="Ember" aria-label="Ember theme"></button>
+    </div>
+  </div>
+</header>
+
+<main class="grid">
+  <section class="col col-left">
+    <article class="panel" id="panel-calendar">
+      <header><h2>Today</h2><span class="meta" id="cal-meta"></span></header>
+      <div class="body" id="calendar"><p class="empty">Loading…</p></div>
+    </article>
+    <article class="panel grow" id="panel-tasks">
+      <header><h2>Tasks</h2><span class="meta" id="task-meta"></span></header>
+      <div class="body scroll" id="tasks"><p class="empty">Loading…</p></div>
+    </article>
+  </section>
+
+  <section class="col col-center">
+    <div id="orb-anchor"></div>
+    <div class="assistant">
+      <p class="state" id="state">Hold <kbd>space</kbd> to talk</p>
+      <div class="transcript" id="transcript"></div>
+      <div class="talk-row">
+        <button class="talk" id="talk" aria-label="Hold to talk">
+          <svg viewBox="0 0 24 24" width="20" height="20"><rect x="9" y="3" width="6" height="12" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <form class="typed" id="typed" hidden>
+        <input id="typed-input" placeholder="Ask Claude…" autocomplete="off">
+      </form>
+      <button class="link-btn" id="new-chat" hidden>New conversation</button>
+    </div>
+  </section>
+
+  <section class="col col-right">
+    <article class="panel" id="panel-inbox">
+      <header><h2>Inbox</h2><span class="meta" id="inbox-meta"></span></header>
+      <div class="body" id="inbox"><p class="empty">Loading…</p></div>
+    </article>
+    <article class="panel grow" id="panel-digest">
+      <header><h2>YouTube digest</h2><span class="meta" id="digest-meta"></span></header>
+      <div class="body scroll" id="digest"><p class="empty">Loading…</p></div>
+    </article>
+  </section>
+</main>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

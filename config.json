@@ -1,0 +1,13 @@
+{
+  "vault": "~/lan_brain",
+  "timezone": "Europe/Ljubljana",
+  "port": 4747,
+  "model": null,
+  "refresh_minutes": 60,
+  "conversation_idle_minutes": 30,
+  "exclude": [
+    "dump",
+    "projects/_template",
+    "projects/sales-coach/playbook/review-checklist.md"
+  ]
+}
