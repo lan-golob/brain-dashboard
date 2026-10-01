@@ -8,6 +8,10 @@ A local, Jarvis-style dashboard for the `~/lan_brain` Obsidian vault. A live par
 
 That starts the server and opens http://localhost:4747. Use Chrome (or Safari) for voice. Stop it with Ctrl-C.
 
+### Desktop app
+
+`app/build.sh` builds `/Applications/Brain.app` (with the orb icon from `app/make_icon.py`). Opening it starts the server in the background if it isn't running, then opens the dashboard in its own Chrome app window, with no tabs and no address bar. It uses Chrome and not Electron or a WebKit wrapper because the free voice input (Web Speech API) only works in a real browser. The server keeps running after you close the window, so reopening is instant. `./stop.sh` stops it. Server log: `~/Library/Logs/brain-dashboard.log`. Rebuild after moving the repo, because the app has the repo path built in.
+
 ## How it works
 
 - **Stack:** `server.py` (Python stdlib only) serves `web/` (plain HTML/CSS/JS). three.js comes from a CDN. No build step.
